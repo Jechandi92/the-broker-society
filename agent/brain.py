@@ -4,6 +4,8 @@
 import os
 import yaml
 import logging
+from datetime import datetime
+import pytz
 from anthropic import AsyncAnthropic
 from dotenv import load_dotenv
 
@@ -53,7 +55,11 @@ async def generar_respuesta(mensaje: str, historial: list[dict]) -> str:
     if not mensaje or len(mensaje.strip()) < 2:
         return obtener_mensaje_fallback()
 
-    system_prompt = cargar_system_prompt()
+    # Obtener hora actual de Mérida para que Lea salude correctamente
+    zona_merida = pytz.timezone("America/Merida")
+    hora_merida = datetime.now(zona_merida).strftime("%H:%M")
+    system_prompt = cargar_system_prompt().replace("[HORA_MERIDA]", hora_merida)
+    system_prompt = f"[HORA_MERIDA: {hora_merida}]\n\n" + system_prompt
 
     mensajes = []
     for msg in historial:
