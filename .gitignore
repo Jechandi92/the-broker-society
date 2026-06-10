@@ -23,6 +23,10 @@ knowledge/*
 !knowledge/Fichas/
 !knowledge/Fichas/*
 
+# Archivos subidos manualmente desde el panel
+uploads/*
+!uploads/.gitkeep
+
 # Session state
 config/session.yaml
 

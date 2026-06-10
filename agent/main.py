@@ -5,8 +5,10 @@ import os
 import secrets
 import logging
 import urllib.parse
+import uuid
+from pathlib import Path
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request, HTTPException, Depends, Form
+from fastapi import FastAPI, Request, HTTPException, Depends, Form, UploadFile, File
 from fastapi.responses import PlainTextResponse, HTMLResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
@@ -19,6 +21,8 @@ from agent.memory import (
     obtener_historial,
     esta_pausado,
     set_pausado,
+    set_etiqueta,
+    eliminar_conversacion,
     listar_conversaciones,
 )
 from agent.providers import obtener_proveedor
@@ -69,6 +73,11 @@ app = FastAPI(
 
 # Sirve las fichas técnicas en PDF para que WhatsApp pueda descargarlas
 app.mount("/fichas", StaticFiles(directory="knowledge/Fichas"), name="fichas")
+
+# Carpeta para archivos enviados manualmente desde el panel
+UPLOADS_DIR = Path("uploads")
+UPLOADS_DIR.mkdir(exist_ok=True)
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 
 @app.get("/")
@@ -170,4 +179,45 @@ async def api_enviar(telefono: str, mensaje: str = Form(...), autorizado: bool =
     """Envía un mensaje manual desde el panel (intervención humana)."""
     await guardar_mensaje(telefono, "assistant", mensaje)
     await proveedor.enviar_mensaje(telefono, mensaje)
+    return {"status": "ok"}
+
+
+@app.post("/api/conversaciones/{telefono}/archivo")
+async def api_enviar_archivo(
+    telefono: str,
+    archivo: UploadFile = File(...),
+    mensaje: str = Form(""),
+    autorizado: bool = Depends(verificar_acceso),
+):
+    """Sube un archivo y lo envía por WhatsApp como documento (intervención humana)."""
+    if not PUBLIC_URL:
+        raise HTTPException(status_code=400, detail="PUBLIC_URL no configurado en el servidor")
+
+    extension = Path(archivo.filename).suffix
+    nombre_unico = f"{uuid.uuid4().hex}{extension}"
+    ruta_destino = UPLOADS_DIR / nombre_unico
+
+    contenido = await archivo.read()
+    ruta_destino.write_bytes(contenido)
+
+    url_archivo = f"{PUBLIC_URL}/uploads/{nombre_unico}"
+
+    descripcion = mensaje or archivo.filename
+    await guardar_mensaje(telefono, "assistant", f"[Archivo enviado: {archivo.filename}]" + (f" — {mensaje}" if mensaje else ""))
+    await proveedor.enviar_documento(telefono, url_archivo, mensaje)
+
+    return {"status": "ok", "url": url_archivo}
+
+
+@app.post("/api/conversaciones/{telefono}/etiqueta")
+async def api_etiqueta(telefono: str, etiqueta: str = "", autorizado: bool = Depends(verificar_acceso)):
+    """Asigna o quita una etiqueta de clasificación a una conversación."""
+    await set_etiqueta(telefono, etiqueta or None)
+    return {"status": "ok", "etiqueta": etiqueta or None}
+
+
+@app.delete("/api/conversaciones/{telefono}")
+async def api_eliminar_conversacion(telefono: str, autorizado: bool = Depends(verificar_acceso)):
+    """Elimina por completo una conversación (mensajes y estado)."""
+    await eliminar_conversacion(telefono)
     return {"status": "ok"}

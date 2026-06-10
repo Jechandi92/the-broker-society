@@ -35,17 +35,27 @@ class Mensaje(Base):
 
 
 class Conversacion(Base):
-    """Estado de cada conversación (si el bot está pausado o no)."""
+    """Estado de cada conversación (pausa y etiqueta de clasificación)."""
     __tablename__ = "conversaciones"
 
     telefono: Mapped[str] = mapped_column(String(50), primary_key=True)
     pausado: Mapped[bool] = mapped_column(Boolean, default=False)
+    etiqueta: Mapped[str | None] = mapped_column(String(30), nullable=True, default=None)
 
 
 async def inicializar_db():
-    """Crea las tablas si no existen."""
+    """Crea las tablas si no existen y aplica migraciones simples."""
+    from sqlalchemy import text
+
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+    # Migración aparte: agregar columna 'etiqueta' si la tabla ya existía sin ella
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text("ALTER TABLE conversaciones ADD COLUMN etiqueta VARCHAR(30)"))
+    except Exception:
+        pass
 
 
 async def guardar_mensaje(telefono: str, role: str, content: str):
@@ -120,6 +130,33 @@ async def set_pausado(telefono: str, pausado: bool):
         await session.commit()
 
 
+async def set_etiqueta(telefono: str, etiqueta: str | None):
+    """Asigna una etiqueta de clasificación a una conversación (o None para quitarla)."""
+    async with async_session() as session:
+        conv = await session.get(Conversacion, telefono)
+        if conv is None:
+            conv = Conversacion(telefono=telefono, pausado=False, etiqueta=etiqueta)
+            session.add(conv)
+        else:
+            conv.etiqueta = etiqueta
+        await session.commit()
+
+
+async def eliminar_conversacion(telefono: str):
+    """Borra por completo una conversación: mensajes y su estado."""
+    async with async_session() as session:
+        query = select(Mensaje).where(Mensaje.telefono == telefono)
+        mensajes = (await session.execute(query)).scalars().all()
+        for msg in mensajes:
+            await session.delete(msg)
+
+        conv = await session.get(Conversacion, telefono)
+        if conv is not None:
+            await session.delete(conv)
+
+        await session.commit()
+
+
 async def listar_conversaciones() -> list[dict]:
     """Lista todas las conversaciones con su último mensaje y estado de pausa."""
     async with async_session() as session:
@@ -149,6 +186,7 @@ async def listar_conversaciones() -> list[dict]:
                 "ultimo_role": ultimo_msg.role,
                 "fecha": ultimo.isoformat(),
                 "pausado": conv.pausado if conv else False,
+                "etiqueta": conv.etiqueta if conv else None,
             })
 
         return conversaciones
