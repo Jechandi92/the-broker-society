@@ -2,15 +2,25 @@
 # Generado por AgentKit
 
 import os
+import secrets
 import logging
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import PlainTextResponse
+from fastapi import FastAPI, Request, HTTPException, Depends, Form
+from fastapi.responses import PlainTextResponse, HTMLResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from dotenv import load_dotenv
 
 from agent.brain import generar_respuesta
-from agent.memory import inicializar_db, guardar_mensaje, obtener_historial
+from agent.memory import (
+    inicializar_db,
+    guardar_mensaje,
+    obtener_historial,
+    esta_pausado,
+    set_pausado,
+    listar_conversaciones,
+)
 from agent.providers import obtener_proveedor
+from agent.panel import PANEL_HTML
 
 load_dotenv()
 
@@ -21,6 +31,21 @@ logger = logging.getLogger("agentkit")
 
 proveedor = obtener_proveedor()
 PORT = int(os.getenv("PORT", 8000))
+
+security = HTTPBasic()
+
+
+def verificar_acceso(credentials: HTTPBasicCredentials = Depends(security)):
+    """Protege el panel con usuario y contraseña definidos en .env."""
+    usuario_correcto = secrets.compare_digest(credentials.username, os.getenv("PANEL_USER", "admin"))
+    clave_correcta = secrets.compare_digest(credentials.password, os.getenv("PANEL_PASSWORD", "changeme"))
+    if not (usuario_correcto and clave_correcta):
+        raise HTTPException(
+            status_code=401,
+            detail="Credenciales incorrectas",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+    return True
 
 
 @asynccontextmanager
@@ -70,14 +95,20 @@ async def webhook_handler(request: Request):
 
             logger.info(f"Mensaje de {msg.telefono}: {msg.texto}")
 
-            # Obtener historial ANTES de guardar el mensaje actual
+            # Obtener historial y estado de pausa ANTES de guardar el mensaje actual
             historial = await obtener_historial(msg.telefono)
+            pausado = await esta_pausado(msg.telefono)
+
+            await guardar_mensaje(msg.telefono, "user", msg.texto)
+
+            if pausado:
+                logger.info(f"Conversación pausada (modo humano) para {msg.telefono}, no se responde")
+                continue
 
             # Generar respuesta con Claude
             respuesta = await generar_respuesta(msg.texto, historial)
 
-            # Guardar mensaje del usuario y respuesta del agente
-            await guardar_mensaje(msg.telefono, "user", msg.texto)
+            # Guardar respuesta del agente
             await guardar_mensaje(msg.telefono, "assistant", respuesta)
 
             # Enviar respuesta por WhatsApp via Twilio
@@ -90,3 +121,40 @@ async def webhook_handler(request: Request):
     except Exception as e:
         logger.error(f"Error en webhook: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ════════════════════════════════════════════════════════════
+# Panel web — para que el equipo vea conversaciones e intervenga
+# ════════════════════════════════════════════════════════════
+
+@app.get("/panel", response_class=HTMLResponse)
+async def panel(autorizado: bool = Depends(verificar_acceso)):
+    """Sirve el panel web de conversaciones."""
+    return PANEL_HTML
+
+
+@app.get("/api/conversaciones")
+async def api_conversaciones(autorizado: bool = Depends(verificar_acceso)):
+    """Lista todas las conversaciones con su último mensaje y estado de pausa."""
+    return await listar_conversaciones()
+
+
+@app.get("/api/conversaciones/{telefono}/mensajes")
+async def api_mensajes(telefono: str, autorizado: bool = Depends(verificar_acceso)):
+    """Devuelve el historial completo de una conversación."""
+    return await obtener_historial(telefono, limite=200)
+
+
+@app.post("/api/conversaciones/{telefono}/pausar")
+async def api_pausar(telefono: str, pausado: bool, autorizado: bool = Depends(verificar_acceso)):
+    """Pausa o reanuda las respuestas automáticas del bot para un número."""
+    await set_pausado(telefono, pausado)
+    return {"status": "ok", "pausado": pausado}
+
+
+@app.post("/api/conversaciones/{telefono}/enviar")
+async def api_enviar(telefono: str, mensaje: str = Form(...), autorizado: bool = Depends(verificar_acceso)):
+    """Envía un mensaje manual desde el panel (intervención humana)."""
+    await guardar_mensaje(telefono, "assistant", mensaje)
+    await proveedor.enviar_mensaje(telefono, mensaje)
+    return {"status": "ok"}

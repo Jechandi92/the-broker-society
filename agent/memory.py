@@ -5,7 +5,7 @@ import os
 from datetime import datetime
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-from sqlalchemy import String, Text, DateTime, select, Integer
+from sqlalchemy import String, Text, DateTime, Boolean, select, Integer, func
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -32,6 +32,14 @@ class Mensaje(Base):
     role: Mapped[str] = mapped_column(String(20))
     content: Mapped[str] = mapped_column(Text)
     timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class Conversacion(Base):
+    """Estado de cada conversación (si el bot está pausado o no)."""
+    __tablename__ = "conversaciones"
+
+    telefono: Mapped[str] = mapped_column(String(50), primary_key=True)
+    pausado: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 async def inicializar_db():
@@ -91,3 +99,56 @@ async def limpiar_historial(telefono: str):
         for msg in mensajes:
             await session.delete(msg)
         await session.commit()
+
+
+async def esta_pausado(telefono: str) -> bool:
+    """Indica si el bot está pausado (modo humano) para este número."""
+    async with async_session() as session:
+        conv = await session.get(Conversacion, telefono)
+        return conv.pausado if conv else False
+
+
+async def set_pausado(telefono: str, pausado: bool):
+    """Pausa o reanuda las respuestas automáticas del bot para este número."""
+    async with async_session() as session:
+        conv = await session.get(Conversacion, telefono)
+        if conv is None:
+            conv = Conversacion(telefono=telefono, pausado=pausado)
+            session.add(conv)
+        else:
+            conv.pausado = pausado
+        await session.commit()
+
+
+async def listar_conversaciones() -> list[dict]:
+    """Lista todas las conversaciones con su último mensaje y estado de pausa."""
+    async with async_session() as session:
+        subq = (
+            select(Mensaje.telefono, func.max(Mensaje.timestamp).label("ultimo"))
+            .group_by(Mensaje.telefono)
+            .order_by(func.max(Mensaje.timestamp).desc())
+        )
+        result = await session.execute(subq)
+        filas = result.all()
+
+        conversaciones = []
+        for telefono, ultimo in filas:
+            conv = await session.get(Conversacion, telefono)
+
+            ultimo_mensaje_query = (
+                select(Mensaje)
+                .where(Mensaje.telefono == telefono)
+                .order_by(Mensaje.timestamp.desc())
+                .limit(1)
+            )
+            ultimo_msg = (await session.execute(ultimo_mensaje_query)).scalar_one()
+
+            conversaciones.append({
+                "telefono": telefono,
+                "ultimo_mensaje": ultimo_msg.content,
+                "ultimo_role": ultimo_msg.role,
+                "fecha": ultimo.isoformat(),
+                "pausado": conv.pausado if conv else False,
+            })
+
+        return conversaciones
