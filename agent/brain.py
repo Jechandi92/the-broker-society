@@ -35,6 +35,25 @@ TOOLS = [
             },
             "required": ["propiedad"],
         },
+    },
+    {
+        "name": "escalar_a_humano",
+        "description": (
+            "Notifica al equipo humano que esta conversación necesita intervención personal: "
+            "el cliente pide hablar con un asesor, tiene una duda que no puedes resolver, o ya "
+            "está listo para agendar una visita o cerrar. Úsala junto con un mensaje breve al "
+            "cliente confirmando que alguien del equipo le va a contactar pronto."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "motivo": {
+                    "type": "string",
+                    "description": "Resumen breve (1-2 oraciones) de qué necesita el cliente y por qué se escala",
+                }
+            },
+            "required": ["motivo"],
+        },
     }
 ]
 
@@ -65,7 +84,7 @@ def obtener_mensaje_fallback() -> str:
     return config.get("fallback_message", "Disculpa, no entendí tu mensaje. ¿Podrías reformularlo?")
 
 
-async def generar_respuesta(mensaje: str, historial: list[dict]) -> tuple[str, str | None]:
+async def generar_respuesta(mensaje: str, historial: list[dict]) -> tuple[str, str | None, str | None]:
     """
     Genera una respuesta usando Claude API.
 
@@ -74,10 +93,10 @@ async def generar_respuesta(mensaje: str, historial: list[dict]) -> tuple[str, s
         historial: Lista de mensajes anteriores [{"role": "user/assistant", "content": "..."}]
 
     Returns:
-        Tupla (texto_respuesta, archivo_ficha_o_None)
+        Tupla (texto_respuesta, archivo_ficha_o_None, motivo_escalacion_o_None)
     """
     if not mensaje or len(mensaje.strip()) < 2:
-        return obtener_mensaje_fallback(), None
+        return obtener_mensaje_fallback(), None, None
 
     # Obtener hora actual de Mérida para que Lea salude correctamente
     zona_merida = pytz.timezone("America/Merida")
@@ -108,6 +127,7 @@ async def generar_respuesta(mensaje: str, historial: list[dict]) -> tuple[str, s
 
         texto_partes = []
         ficha_solicitada = None
+        motivo_escalacion = None
 
         for bloque in response.content:
             if bloque.type == "text":
@@ -115,15 +135,20 @@ async def generar_respuesta(mensaje: str, historial: list[dict]) -> tuple[str, s
             elif bloque.type == "tool_use" and bloque.name == "enviar_ficha_tecnica":
                 propiedad = bloque.input.get("propiedad")
                 ficha_solicitada = FICHAS.get(propiedad)
+            elif bloque.type == "tool_use" and bloque.name == "escalar_a_humano":
+                motivo_escalacion = bloque.input.get("motivo", "El cliente necesita atención personal")
 
         respuesta = "\n".join(texto_partes).strip()
 
         if not respuesta and ficha_solicitada:
             respuesta = "Claro, te comparto la ficha técnica con todos los detalles 📄"
 
+        if not respuesta and motivo_escalacion:
+            respuesta = "Claro, ahora mismo le comento a alguien del equipo para que te apoye 🙂"
+
         logger.info(f"Respuesta generada ({response.usage.input_tokens} in / {response.usage.output_tokens} out)")
-        return respuesta, ficha_solicitada
+        return respuesta, ficha_solicitada, motivo_escalacion
 
     except Exception as e:
         logger.error(f"Error Claude API: {e}")
-        return obtener_mensaje_error(), None
+        return obtener_mensaje_error(), None, None

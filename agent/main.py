@@ -38,6 +38,7 @@ logger = logging.getLogger("agentkit")
 proveedor = obtener_proveedor()
 PORT = int(os.getenv("PORT", 8000))
 PUBLIC_URL = os.getenv("PUBLIC_URL", "").rstrip("/")
+BROKER_PHONE = os.getenv("BROKER_PHONE", "")
 
 security = HTTPBasic()
 
@@ -121,7 +122,7 @@ async def webhook_handler(request: Request):
                 continue
 
             # Generar respuesta con Claude
-            respuesta, archivo_ficha = await generar_respuesta(msg.texto, historial)
+            respuesta, archivo_ficha, motivo_escalacion = await generar_respuesta(msg.texto, historial)
 
             # Guardar respuesta del agente
             await guardar_mensaje(msg.telefono, "assistant", respuesta)
@@ -135,6 +136,21 @@ async def webhook_handler(request: Request):
                 await proveedor.enviar_documento(msg.telefono, url_ficha)
             elif archivo_ficha and not PUBLIC_URL:
                 logger.warning("PUBLIC_URL no configurado, no se pudo enviar la ficha técnica")
+
+            # Si Lea pidió escalar a una persona, pausar el bot y avisar al equipo
+            if motivo_escalacion:
+                await set_pausado(msg.telefono, True)
+                if BROKER_PHONE:
+                    aviso = (
+                        f"🔔 Lea necesita tu apoyo con un lead\n\n"
+                        f"Número: {msg.telefono}\n"
+                        f"Motivo: {motivo_escalacion}\n"
+                        f"Último mensaje del cliente: \"{msg.texto}\"\n\n"
+                        f"El bot quedó pausado para esta conversación. Puedes responder desde el panel."
+                    )
+                    await proveedor.enviar_mensaje(BROKER_PHONE, aviso)
+                else:
+                    logger.warning("BROKER_PHONE no configurado, no se pudo avisar al equipo")
 
             logger.info(f"Respuesta a {msg.telefono}: {respuesta}")
 

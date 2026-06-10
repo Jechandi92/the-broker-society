@@ -56,10 +56,12 @@ async def main():
         historial = await obtener_historial(TELEFONO_TEST)
 
         print("\nLea: ", end="", flush=True)
-        respuesta, archivo_ficha = await generar_respuesta(mensaje, historial)
+        respuesta, archivo_ficha, motivo_escalacion = await generar_respuesta(mensaje, historial)
         print(respuesta)
         if archivo_ficha:
             print(f"[Adjuntaría ficha técnica: {archivo_ficha}]")
+        if motivo_escalacion:
+            print(f"[Escalaría a humano: {motivo_escalacion}]")
         print()
 
         await guardar_mensaje(TELEFONO_TEST, "user", mensaje)
