@@ -52,3 +52,24 @@ class ProveedorTwilio(ProveedorWhatsApp):
             if r.status_code != 201:
                 logger.error(f"Error Twilio: {r.status_code} — {r.text}")
             return r.status_code == 201
+
+    async def enviar_documento(self, telefono: str, url_documento: str, mensaje: str = "") -> bool:
+        """Envía un documento (ej. PDF de ficha técnica) via Twilio API."""
+        if not all([self.account_sid, self.auth_token, self.phone_number]):
+            logger.warning("Variables de Twilio no configuradas")
+            return False
+        url = f"https://api.twilio.com/2010-04-01/Accounts/{self.account_sid}/Messages.json"
+        auth = base64.b64encode(f"{self.account_sid}:{self.auth_token}".encode()).decode()
+        headers = {"Authorization": f"Basic {auth}"}
+        data = {
+            "From": f"whatsapp:{self.phone_number}",
+            "To": f"whatsapp:{telefono}",
+            "MediaUrl": url_documento,
+        }
+        if mensaje:
+            data["Body"] = mensaje
+        async with httpx.AsyncClient() as client:
+            r = await client.post(url, data=data, headers=headers)
+            if r.status_code != 201:
+                logger.error(f"Error Twilio (documento): {r.status_code} — {r.text}")
+            return r.status_code == 201

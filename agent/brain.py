@@ -9,10 +9,34 @@ import pytz
 from anthropic import AsyncAnthropic
 from dotenv import load_dotenv
 
+from agent.fichas import FICHAS
+
 load_dotenv(override=True)
 logger = logging.getLogger("agentkit")
 
 client = AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+
+TOOLS = [
+    {
+        "name": "enviar_ficha_tecnica",
+        "description": (
+            "Envía la ficha técnica en PDF de una propiedad al cliente por WhatsApp, "
+            "con fotos y todos los detalles. Úsala cuando el cliente muestre interés real "
+            "en una propiedad específica (pregunta por más info, fotos, ubicación o detalles)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "propiedad": {
+                    "type": "string",
+                    "enum": list(FICHAS.keys()),
+                    "description": "Identificador de la propiedad de la cual enviar la ficha técnica",
+                }
+            },
+            "required": ["propiedad"],
+        },
+    }
+]
 
 
 def cargar_config_prompts() -> dict:
@@ -41,7 +65,7 @@ def obtener_mensaje_fallback() -> str:
     return config.get("fallback_message", "Disculpa, no entendí tu mensaje. ¿Podrías reformularlo?")
 
 
-async def generar_respuesta(mensaje: str, historial: list[dict]) -> str:
+async def generar_respuesta(mensaje: str, historial: list[dict]) -> tuple[str, str | None]:
     """
     Genera una respuesta usando Claude API.
 
@@ -50,10 +74,10 @@ async def generar_respuesta(mensaje: str, historial: list[dict]) -> str:
         historial: Lista de mensajes anteriores [{"role": "user/assistant", "content": "..."}]
 
     Returns:
-        La respuesta generada por Claude
+        Tupla (texto_respuesta, archivo_ficha_o_None)
     """
     if not mensaje or len(mensaje.strip()) < 2:
-        return obtener_mensaje_fallback()
+        return obtener_mensaje_fallback(), None
 
     # Obtener hora actual de Mérida para que Lea salude correctamente
     zona_merida = pytz.timezone("America/Merida")
@@ -78,13 +102,28 @@ async def generar_respuesta(mensaje: str, historial: list[dict]) -> str:
             model="claude-sonnet-4-6",
             max_tokens=1024,
             system=system_prompt,
+            tools=TOOLS,
             messages=mensajes
         )
 
-        respuesta = response.content[0].text
+        texto_partes = []
+        ficha_solicitada = None
+
+        for bloque in response.content:
+            if bloque.type == "text":
+                texto_partes.append(bloque.text)
+            elif bloque.type == "tool_use" and bloque.name == "enviar_ficha_tecnica":
+                propiedad = bloque.input.get("propiedad")
+                ficha_solicitada = FICHAS.get(propiedad)
+
+        respuesta = "\n".join(texto_partes).strip()
+
+        if not respuesta and ficha_solicitada:
+            respuesta = "Claro, te comparto la ficha técnica con todos los detalles 📄"
+
         logger.info(f"Respuesta generada ({response.usage.input_tokens} in / {response.usage.output_tokens} out)")
-        return respuesta
+        return respuesta, ficha_solicitada
 
     except Exception as e:
         logger.error(f"Error Claude API: {e}")
-        return obtener_mensaje_error()
+        return obtener_mensaje_error(), None

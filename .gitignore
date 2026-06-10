@@ -20,6 +20,8 @@ build/
 # Knowledge (archivos privados del negocio)
 knowledge/*
 !knowledge/.gitkeep
+!knowledge/Fichas/
+!knowledge/Fichas/*
 
 # Session state
 config/session.yaml

@@ -4,10 +4,12 @@
 import os
 import secrets
 import logging
+import urllib.parse
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, HTTPException, Depends, Form
 from fastapi.responses import PlainTextResponse, HTMLResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
 
 from agent.brain import generar_respuesta
@@ -31,6 +33,7 @@ logger = logging.getLogger("agentkit")
 
 proveedor = obtener_proveedor()
 PORT = int(os.getenv("PORT", 8000))
+PUBLIC_URL = os.getenv("PUBLIC_URL", "").rstrip("/")
 
 security = HTTPBasic()
 
@@ -63,6 +66,9 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan
 )
+
+# Sirve las fichas técnicas en PDF para que WhatsApp pueda descargarlas
+app.mount("/fichas", StaticFiles(directory="knowledge/Fichas"), name="fichas")
 
 
 @app.get("/")
@@ -106,13 +112,20 @@ async def webhook_handler(request: Request):
                 continue
 
             # Generar respuesta con Claude
-            respuesta = await generar_respuesta(msg.texto, historial)
+            respuesta, archivo_ficha = await generar_respuesta(msg.texto, historial)
 
             # Guardar respuesta del agente
             await guardar_mensaje(msg.telefono, "assistant", respuesta)
 
             # Enviar respuesta por WhatsApp via Twilio
             await proveedor.enviar_mensaje(msg.telefono, respuesta)
+
+            # Si Lea pidió enviar una ficha técnica, mandarla como documento PDF
+            if archivo_ficha and PUBLIC_URL:
+                url_ficha = f"{PUBLIC_URL}/fichas/{urllib.parse.quote(archivo_ficha)}"
+                await proveedor.enviar_documento(msg.telefono, url_ficha)
+            elif archivo_ficha and not PUBLIC_URL:
+                logger.warning("PUBLIC_URL no configurado, no se pudo enviar la ficha técnica")
 
             logger.info(f"Respuesta a {msg.telefono}: {respuesta}")
 
